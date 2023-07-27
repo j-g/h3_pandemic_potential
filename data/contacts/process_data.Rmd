@@ -1,0 +1,131 @@
+```{r}
+source("process_fns.R")
+
+
+################################################################################
+# Process and save raw data
+################################################################################
+load("raw_data.RData")
+
+contact_data<-list()
+for(i in 1:length(countries_raw))
+{
+  contact_data[[i]]<-process_country(countries_raw[[i]], 70, 5)
+}
+
+save(contact_data, file="processed_data.RData")
+```
+
+
+```{r}
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(ggpubr)
+
+load("processed_data.RData")
+
+conts<-lapply(contact_data, function(x){
+                                          y<-as.data.frame(x$cont)
+                                          y$part<-rownames(y)
+                                          y<-melt(y, id="part")
+                                          colnames(y)[2]<-"cont"
+                                          y$country<-x$country
+                                          return(y)
+                                        })
+
+df<-bind_rows(conts, .id = "column_label")
+
+df$part<-factor(df$part, levels=c("0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49", "50-54", "55-59", "60-64", "65-69", "70+"))
+df$cont<-factor(df$cont, levels=c("0-4", "5-9", "10-14", "15-19", "20-24", "25-29", "30-34", "35-39", "40-44", "45-49", "50-54", "55-59", "60-64", "65-69", "70+"))
+
+df<-df%>%group_by(country)%>%mutate(value=value/max(value))
+
+behav_fig<-ggplot(df, aes(x=part, y=cont, fill=value))+
+  geom_tile()+
+  coord_fixed()+
+  theme_bw()+
+  guides(fill = guide_colorbar(title.position = "top",
+                             label.position = "bottom",
+                             nrow = 1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, size=7),
+        axis.text.y = element_text(size = 8),
+        plot.margin = margin(t = 5.5, r = 5.5, b = 3.5, l = 5.5, unit = "pt"),
+        legend.position = c(.87, .12),
+        legend.justification = "center",
+        legend.direction = "horizontal",
+        legend.title.align=0.5)+
+        #legend.title = element_text(size = 8))+
+  labs(x="Participant age", y="Contact age", fill="Normalized\ncontact rate")+
+  scale_fill_viridis_c(limits=c(0,1))+
+  facet_wrap(vars(country))
+
+
+# ggsave(fig, filename = "cont.pdf", width=10, height=10)
+
+
+dems<-lapply(contact_data, function(x){
+                                          y<-as.data.frame(x$dem)
+                                          y$country<-x$country
+                                          return(y)
+                                        })
+
+df<-bind_rows(dems, .id = "column_label")
+df$Age<-as.numeric(as.character(df$Age))
+
+df<-df%>%group_by(country)%>%mutate(Value=Value/sum(Value))
+bin<-2
+df$yr<-bin*floor(df$Age/bin)
+df<-df%>%group_by(country, yr)%>%summarise(y=mean(Value))
+
+demo_fig<-ggplot(df, aes(x=yr, y=y))+
+  geom_line()+
+  theme_bw()+
+  scale_x_continuous(breaks=seq(0,100,10))+
+  theme(plot.margin = margin(t = 5.5, r = 5.5, b = 14, l = 5.5, unit = "pt"))+
+  labs(x="Age", y="Probability density")+
+  geom_ribbon(aes(ymin=0, ymax=y), fill="blue", alpha=0.3)+
+  facet_wrap(vars(country))
+
+
+p<-ggarrange(behav_fig, demo_fig, nrow=1, labels = c("a", "b"))
+
+ggsave(p, filename = "dem_behav.pdf", width=16, height=9)
+```
+
+
+```{r}
+# Check reciprocity upheld
+
+check_recip<-function(cont, dem)
+{
+  N<-nrow(cont)
+  
+  tot<-matrix(0, N, N)
+  
+  for(i in 1:N)
+  {
+    for(j in 1:N)
+    {
+      tot[i,j]<-cont[i,j]*dem$Value[j]
+    }
+  }
+  
+  diff<-matrix(0, N, N)
+  for(i in 1:N)
+  {
+    for(j in 1:N)
+    {
+      diff[i,j]<-abs(tot[i,j]-tot[j,i])
+    }
+  }
+  return(sum(diff))
+}
+
+for(i in 1:length(contact_data))
+{
+  diff<-check_recip(contact_data[[i]]$cont, contact_data[[i]]$dem_bin)
+  print(diff)
+}
+```

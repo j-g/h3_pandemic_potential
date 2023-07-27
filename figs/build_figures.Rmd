@@ -1,0 +1,582 @@
+
+```{r}
+###########################################################
+# Figure generation scripts, load following libs beforehand
+###########################################################
+
+library(ggplot2)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(gstat) # Use gstat's idw routine
+library(sp)    # Used for the spsample function
+library(pracma)
+library(RColorBrewer)
+library(ggpubr)
+library(lamW)
+
+
+source("../data/contacts/process_fns.R")
+source("../models/r0_calculation_fns.R")
+load("../data/contacts/processed_data.RData")
+```
+
+
+```{r}
+###############
+# Susc profiles
+###############
+
+m_param<-as.data.frame(t(colMeans(params)))
+
+# Broad immunity
+dat<-NULL
+for(yr in 1968:2022)
+{
+  dx<-predict_susc(m_param, alpha, beta, 1, 70, yr, nonHAI = T, mag=0.5, StudyYear=2022)
+  dx$year<-yr
+  dat<-rbind(dat, dx)
+}
+
+# HAI immunity
+dat2<-NULL
+for(yr in 1968:2022)
+{
+  dx<-predict_susc(m_param, alpha, beta, 1, 70, yr, nonHAI = F, mag=0.5, StudyYear=2022)
+  dx$year<-yr
+  dat2<-rbind(dat2, dx)
+}
+
+fig<-ggplot(dat, aes(x=Age, y=year, fill=susc))+
+  geom_tile()+
+  theme_bw()+
+  labs(x="Age", y="Strain year", fill="Susceptibility")+
+  scale_y_continuous(breaks=seq(1970, 2020, 10))+
+  scale_x_continuous(breaks=seq(0, 80, 10))+
+  scale_fill_viridis_c(limits=c(0,1))
+
+ggsave(fig, filename = "susc_brd.pdf", width=10, height=6)
+
+
+fig<-ggplot(dat2, aes(x=Age, y=year, fill=susc))+
+  geom_tile()+
+  theme_bw()+
+  labs(x="Age", y="Strain year", fill="Susceptibility")+
+  scale_y_continuous(breaks=seq(1970, 2020, 10))+
+  scale_x_continuous(breaks=seq(0, 80, 10))+
+  scale_fill_viridis_c(limits=c(0,1))
+
+ggsave(fig, filename = "susc.pdf", width=10, height=6)
+```
+
+```{r}
+########################
+# R_eff for each country
+########################
+
+load(file="../out/country_sweep.RData")
+
+# Calculate post epi R0 given pre season value
+R0<-1.25
+seas_R0<-R0*(-1/R0)*lambertWp(-R0*exp(-R0))
+
+# Norm according to R_eff at current year = seasonal post epi Reff
+out<-out%>%group_by(country_name)%>%mutate(seas0=median(R0[strain_yr==max(strain_yr)]))
+out$R0seas<-seas_R0*out$R0/out$seas0
+
+N<-9
+my_palette <- brewer.pal(name="YlOrRd", n=N)[N:(N-5)]
+
+
+################
+# Country sweeps
+################
+
+ci<-out%>%group_by(country_name, strain_yr)%>%summarise(lolo=quantile(R0seas, 0.025),
+                                                     lo=quantile(R0seas, 0.25),
+                                                     med=quantile(R0seas, 0.5),
+                                                     hi=quantile(R0seas, 0.75),
+                                                     hihi=quantile(R0seas, 0.975)
+                                                     )
+
+fig_country_sweep<-ggplot(ci, aes(x=strain_yr, y=med))+
+  geom_line(alpha=0.3)+
+  geom_ribbon(aes(ymin=lolo, ymax=hihi), alpha=0.2)+
+  geom_ribbon(aes(ymin=lo, ymax=hi), alpha=0.2)+
+  theme_bw()+
+  facet_wrap(vars(country_name))
+
+
+###########
+# Intercept
+###########
+
+df<-out[order(out$country_name, out$rep, -out$strain_yr),]
+
+df<-df%>%group_by(country_name)%>%mutate(diff=c(NA,diff(R0seas)) )
+df<-df%>%group_by(country_name, rep)%>%mutate( s0 = R0seas[strain_yr==max(strain_yr)] )
+
+inters<-df%>%group_by(country_name, k, med_age, rep)%>%summarise(abs=strain_yr[min(which(R0seas>1 & diff>0))],
+                                                                 rel=strain_yr[min(which(R0seas>seas_R0 & diff>0))])
+
+inters<-melt(inters, id=c("country_name", "k", "med_age", "rep"))
+colnames(inters)[5:6]<-c("method", "year")
+
+ints<-inters%>%group_by(country_name, k, med_age, method)%>%summarise(lolo=quantile(year, 0.025),
+                                                                      lo=quantile(year, 0.25),
+                                                                      med=quantile(year, 0.5),
+                                                                      hi=quantile(year, 0.75),
+                                                                      hihi=quantile(year, 0.975)
+                                                                      )
+
+
+df<-ints%>%filter(method=="abs")
+
+ord<-df[order(df$med),]
+ord<-ord$country_name
+
+df$country_name<-factor(df$country_name, levels = ord)
+
+fig_country_inter<-ggplot(df, aes(y=country_name, x=med))+
+  geom_point()+
+  theme_bw()+
+  labs(y="Country", x=expression("Strain year beyond which "~R[eff]>1))+
+  scale_x_continuous(breaks = seq(1982,2010,2) )+
+  geom_linerange(aes(xmin=lo, xmax=hi), size=1)+
+  geom_linerange(aes(xmin=lolo, xmax=hihi))
+
+
+ggsave(fig_country_sweep, filename = "country_sweep.pdf", width=10, height=6)
+ggsave(fig_country_inter, filename = "crit_yrs.pdf", width=6, height=6)
+
+```
+
+
+```{r}
+#######################################
+# R_eff for artificial hybrid countries
+#######################################
+
+###########
+# Intercept
+###########
+
+load("../out/country_mix_sweep.RData")
+
+seas_R0<-1
+
+out<-out%>%group_by(country_name)%>%mutate(seas0=median(R0[strain_yr==max(strain_yr)]))
+
+out$R0seas<-seas_R0*out$R0/out$seas0
+
+df<-out[order(out$country_name, out$rep, -out$strain_yr),]
+
+df<-df%>%group_by(country_name)%>%mutate(diff=c(NA,diff(R0seas)) )
+df<-df%>%group_by(country_name, rep)%>%mutate( s0 = R0seas[strain_yr==max(strain_yr)] )
+
+inters<-df%>%group_by(country_name, k, med_age, rep)%>%summarise(abs=strain_yr[min(which(R0seas>seas_R0 & diff>0))],
+                                                                 rel=strain_yr[min(which(R0seas>s0 & diff>0))])
+
+inters<-melt(inters, id=c("country_name", "k", "med_age", "rep"))
+colnames(inters)[5:6]<-c("method", "year")
+
+ints<-inters%>%group_by(country_name, k, med_age, method)%>%summarise(lolo=quantile(year, 0.025),
+                                                          lo=quantile(year, 0.25),
+                                                          med=quantile(year, 0.5),
+                                                          hi=quantile(year, 0.75),
+                                                          hihi=quantile(year, 0.975)
+                                                          )
+
+dat<-ints%>%filter(method=="abs")
+
+rls<-dat%>%filter(gsub(".*\\_", "", country_name)==gsub("\\_.*", "", country_name))
+
+dat<-ints%>%filter(method=="abs")
+
+rat<-(max(dat$med_age)-min(dat$med_age))/(max(dat$k)-min(dat$k))
+
+dat$k<-dat$k*rat
+
+ggplot(dat, aes(x=med_age, y=k, color=med))+
+  geom_point(size=4)+
+  scale_color_viridis_c()+
+  theme_bw()
+
+ngrd<-10
+# Create an empty grid where n is the total number of cells
+grd <- expand.grid(med_age=seq(from=min(dat$med_age)-0.1*(max(dat$med_age)-min(dat$med_age)),
+                               to=1.1*max(dat$med_age)+0.1*(max(dat$med_age)-min(dat$med_age)), length=ngrd),
+                   k=seq(from=min(dat$k)-0.1*(max(dat$k)-min(dat$k)),
+                         to=max(dat$k)+0.1*(max(dat$k)-min(dat$k)), length=ngrd))
+
+
+
+coordinates(grd) <- c("med_age", "k")
+coordinates(dat) <- c("med_age", "k")
+
+# idw_temp <- gstat(formula = med ~ 1, data = dat)
+# pred <- predict(object = idw_temp, newdata = grd)
+
+pred <- gstat::idw(med ~ 1, dat, newdata=grd, idp=3)
+
+p<-as.data.frame(pred)
+dat<-as.data.frame(dat)
+
+dat$k<-dat$k/rat
+p$k<-p$k/rat
+
+p<-p[,1:3]
+colnames(p)[3]<-"pred"
+
+# dat$med<-2022-dat$med
+# p$pred<-2022-p$pred
+
+fig_mix<-ggplot()+
+  theme_bw()+
+  geom_contour_filled(data=p, aes(x=med_age, y=k, z=pred), color="black", alpha=0.4, binwidth = 5, linewidth=0.3)+
+  scale_fill_viridis_d()+
+  guides(fill = FALSE)+
+  geom_point(data=dat, aes(x=med_age, y=k, color=med), size=3)+
+  geom_point(data=rls, aes(x=med_age, y=k), color="black", size=3, shape=1, stroke=1)+
+  labs(x="Median age", y="Y", color=expression("Strain year beyond which "~R[eff]>R[eff]^seas))+
+  theme(legend.position = "top")+
+  coord_cartesian(xlim=c(min(dat$med_age), max(dat$med_age) ), ylim=c(min(dat$k), max(dat$k) ))+
+  scale_x_continuous(breaks=seq(15, 45, 5))+
+  scale_color_viridis_c()
+
+ggsave(fig, filename="mixes.pdf", width=6, height=4)
+
+p<-ggarrange(fig_country, fig_mix, nrow=1, labels = c("a", "b"), widths = c(0.4, 0.6))
+
+ggsave(p, filename = "fig2.pdf", width=10, height=6)
+
+```
+
+```{r}
+##############
+# Y vs med_age
+##############
+
+library(ggrepel)
+load("../out/country_sweep.RData")
+df<-out%>%group_by(country_name)%>%summarise(k=k[1], med_age=med_age[1])
+
+fig<-ggplot(df, aes(x=med_age, y=k))+
+  geom_point()+
+  theme_bw()+
+  labs(x="Median age", y="Y")+
+  scale_x_continuous(breaks=5*(1:10))+
+  geom_text_repel(aes(label=country_name))
+
+ggsave("country_dist.pdf", fig, width=6, height=5)
+```
+
+```{r}
+###########################
+# Effects of broad immunity
+###########################
+
+# Load non-broad data and use as benchmark
+load(file="../out/country_sweep.RData")
+df<-out
+df$grad<-0
+
+# Load broad data
+for(grad in c(2,4,6,8,10))
+{
+  load(file=paste("../out/country_sweep_broad_new_ranj_", grad, ".RData"))
+  out$grad<-grad/10
+  df<-rbind(df, out)
+}
+
+out<-df
+
+fig_theme<-theme(axis.text = element_text(size = 6),
+                   axis.title = element_text(size = 7),
+                   strip.text = element_text(size = 7),
+                   legend.text = element_text(size = 6),
+                   legend.title = element_text(size = 7))
+
+# Calculate post epi R0 given pre season value
+R0<-1.25
+seas_R0<-R0*(-1/R0)*lambertWp(-R0*exp(-R0))
+
+# Norm all
+out<-out%>%group_by(country_name, grad)%>%mutate(seas0=median(R0[strain_yr==max(strain_yr)]))
+out$R0seas<-seas_R0*out$R0/out$seas0
+
+# colours
+N<-9
+my_palette <- brewer.pal(name="GnBu", n=N)[N:(N-5)]
+
+################
+# Country sweeps
+################
+
+
+ci<-out%>%group_by(country_name, strain_yr, grad)%>%summarise(lolo=quantile(R0seas, 0.025),
+                                                     lo=quantile(R0seas, 0.25),
+                                                     med=quantile(R0seas, 0.5),
+                                                     hi=quantile(R0seas, 0.75),
+                                                     hihi=quantile(R0seas, 0.975)
+                                                     )
+
+####################
+# R_eff=1 Intercepts
+####################
+
+df<-out[order(out$country_name, out$grad, out$rep, -out$strain_yr),]
+
+df<-df%>%group_by(country_name, grad)%>%mutate(diff=c(NA,diff(R0seas)) )
+df<-df%>%group_by(country_name, grad, rep)%>%mutate( s0 = R0seas[strain_yr==max(strain_yr)] )
+
+df
+
+inters<-df%>%group_by(country_name, grad, k, med_age, rep)%>%summarise(abs=strain_yr[min(which(R0seas>1 & diff>0))],
+                                                                 rel=strain_yr[min(which(R0seas>seas_R0 & diff>0))])
+
+inters
+
+inters<-melt(inters, id=c("country_name", "grad", "k", "med_age", "rep"))
+colnames(inters)[6:7]<-c("method", "year")
+
+inters<-na.omit(inters)
+
+inters$tsc<-2022-inters$year
+
+ints<-inters%>%group_by(country_name, grad, k, med_age, method)%>%summarise(lolo=quantile(tsc, 0.025),
+                                                                      lo=quantile(tsc, 0.25),
+                                                                      med=quantile(tsc, 0.5),
+                                                                      hi=quantile(tsc, 0.75),
+                                                                      hihi=quantile(tsc, 0.975)
+                                                                      )
+ints2<-inters%>%group_by(country_name, grad, k, med_age, method)%>%summarise(lolo=quantile(year, 0.025),
+                                                                      lo=quantile(year, 0.25),
+                                                                      med=quantile(year, 0.5),
+                                                                      hi=quantile(year, 0.75),
+                                                                      hihi=quantile(year, 0.975)
+                                                                      )
+df<-ints2%>%filter(method=="abs")
+
+ord<-df%>%filter(grad==0)
+ord<-ord[order(ord$med),]
+ord<-ord$country_name
+
+df$country_name<-factor(df$country_name, levels = ord)
+
+pd<-position_dodge(width=c(0.8))
+
+fig_country_inter<-ggplot(df, aes(y=country_name, x=med, color=as.factor(grad)))+
+  theme_bw()+
+  fig_theme+
+  guides(colour = guide_legend(nrow = 1))+
+  theme(plot.margin = margin(t=20.5, r=5.5, b=5.5, l=5.5, unit="pt"))+
+  labs(y="Country", x=expression("Strain year when "~R[eff]==1), color="Degree of broad immunity")+
+  #scale_x_continuous(breaks = seq(1982,2010,2) )+
+  scale_color_manual(values=my_palette)+
+  geom_point(position=pd)+
+  geom_linerange(aes(xmin=lo, xmax=hi), size=1, position=pd)+
+  geom_linerange(aes(xmin=lolo, xmax=hihi), position=pd)
+
+##############################
+# R_eff for selection of years
+##############################
+
+subci<-ci%>%filter(strain_yr %in% c(1968, 1978, 1988, 1998) )
+
+ord<-subci%>%filter(strain_yr==1968 & grad==0)
+
+ord<-ord[order(ord$med),]
+ord<-ord$country_name
+
+subci<-as.data.frame(subci)
+
+subci$country_name<-factor(subci$country_name, levels = ord)
+
+fig_68<-ggplot(subci, aes(y=country_name, x=med, color=as.factor(grad)))+
+  theme_bw()+
+  fig_theme+
+  geom_vline(xintercept=1, color="red", linetype="dashed")+
+  labs(y="Country", x=expression(R[eff]~"for given strain year"), color="Degree of broad immunity")+
+  guides(colour = guide_legend(nrow = 1))+
+  #coord_cartesian(xlim=c(0.65,NA))+
+  #scale_x_continuous(breaks=seq(0.8,2,0.2))+
+  scale_color_manual(values=my_palette)+
+  geom_point(position=pd)+
+  geom_linerange(aes(xmin=lo, xmax=hi), size=1, position=pd)+
+  geom_linerange(aes(xmin=lolo, xmax=hihi), position=pd)+
+  facet_wrap(vars(strain_yr), nrow = 1)
+
+
+df<-ints2%>%filter(method=="abs")
+
+fig_country_sweep<-ggplot(ci, aes(x=strain_yr, y=med, color=as.factor(grad)))+
+  theme_bw()+
+  fig_theme+
+  geom_hline(yintercept = 1, color="red", linetype="dashed")+
+  #geom_segment(data=df, aes(x = med, y = -Inf, xend = med, yend = 1), linetype="dashed", color="blue")+
+  labs(x="Strain year", y=expression(R[eff]), color="Degree of broad immunity")+
+  geom_line()+
+  guides(colour = guide_legend(nrow = 1))+
+  scale_color_manual(values=my_palette)+
+  #geom_vline(aes(xintercept=grad, color=as.factor(grad)), linetype="dashed")+
+  theme(legend.position = "bottom")+
+  # geom_ribbon(aes(ymin=lolo, ymax=hihi), alpha=0.2)+
+  # geom_ribbon(aes(ymin=lo, ymax=hi), alpha=0.5)+
+  facet_wrap(vars(country_name), ncol = 5)
+
+p<-ggarrange(fig_country_inter, fig_68, labels = c("a", "b"), widths = c(1.15,3),  nrow = 1, font.label = list(size = 8), common.legend = T, legend="bottom")
+# p<-ggarrange(fig_country_sweep, p, labels = c("a", NA), heights = c(0.65,0.35),  nrow = 2, font.label = list(size = 8), common.legend = T)
+
+ggsave(p, filename = "fig_broad_ranj.pdf", width= 183, height=140, units="mm")
+
+ggsave(fig_country_sweep, filename = "fig_broad_sweep_ranj.pdf", width= 183, height=140, units="mm")
+
+```
+
+```{r}
+#############################
+# Projections into the future
+#############################
+
+# Load future years and current year as a benchmark
+load(file=paste("../out/country_sweep_future.RData"))
+out1<-out
+
+load(file="../out/country_sweep.RData")
+out$StudyYear<-2022
+out<-rbind(out, out1)
+
+fig_theme<-theme(axis.text = element_text(size = 6),
+                   axis.title = element_text(size = 7),
+                   strip.text = element_text(size = 7),
+                   legend.text = element_text(size = 6),
+                   legend.title = element_text(size = 7))
+
+# Calculate post epi R0 given pre season value
+R0<-1.25
+seas_R0<-R0*(-1/R0)*lambertWp(-R0*exp(-R0))
+
+# Norm all
+out<-out%>%group_by(country_name, StudyYear)%>%mutate(seas0=median(R0[strain_yr==max(strain_yr)]))
+out$R0seas<-seas_R0*out$R0/out$seas0
+
+# Colours
+N<-9
+my_palette <- brewer.pal(name="YlOrRd", n=N)[N:(N-4)]
+
+#####################
+# Country sweeps CI's
+#####################
+
+ci<-out%>%group_by(country_name, strain_yr, StudyYear)%>%summarise(lolo=quantile(R0seas, 0.025),
+                                                     lo=quantile(R0seas, 0.25),
+                                                     med=quantile(R0seas, 0.5),
+                                                     hi=quantile(R0seas, 0.75),
+                                                     hihi=quantile(R0seas, 0.975)
+                                                     )
+
+####################
+# R_eff=1 Intercepts
+####################
+
+df<-out[order(out$country_name, out$StudyYear, out$rep, -out$strain_yr),]
+
+df<-df%>%group_by(country_name, StudyYear)%>%mutate(diff=c(NA,diff(R0seas)) )
+df<-df%>%group_by(country_name, StudyYear, rep)%>%mutate( s0 = R0seas[strain_yr==max(strain_yr)] )
+
+inters<-df%>%group_by(country_name, StudyYear, k, med_age, rep)%>%summarise(abs=strain_yr[min(which(R0seas>1 & diff>0))],
+                                                                 rel=strain_yr[min(which(R0seas>seas_R0 & diff>0))])
+
+inters<-melt(inters, id=c("country_name", "StudyYear", "k", "med_age", "rep"))
+colnames(inters)[6:7]<-c("method", "year")
+
+inters$tsc<-inters$StudyYear-inters$year
+
+ints<-inters%>%group_by(country_name, StudyYear, k, med_age, method)%>%summarise(lolo=quantile(tsc, 0.025),
+                                                                      lo=quantile(tsc, 0.25),
+                                                                      med=quantile(tsc, 0.5),
+                                                                      hi=quantile(tsc, 0.75),
+                                                                      hihi=quantile(tsc, 0.975)
+                                                                      )
+ints2<-inters%>%group_by(country_name, StudyYear, k, med_age, method)%>%summarise(lolo=quantile(year, 0.025),
+                                                                      lo=quantile(year, 0.25),
+                                                                      med=quantile(year, 0.5),
+                                                                      hi=quantile(year, 0.75),
+                                                                      hihi=quantile(year, 0.975)
+                                                                      )
+df<-ints%>%filter(method=="abs")
+
+ord<-df%>%filter(StudyYear==2022)
+ord<-ord[order(-ord$med),]
+ord<-ord$country_name
+
+df$country_name<-factor(df$country_name, levels = ord)
+
+pd<-position_dodge(width=c(0.8))
+
+fig_country_inter<-ggplot(df, aes(y=country_name, x=med, color=as.factor(StudyYear)))+
+  theme_bw()+
+  fig_theme+
+  theme(plot.margin = margin(t=20.5, r=5.5, b=5.5, l=5.5, unit="pt"))+
+  labs(y="Country", x=expression("Strain age when "~R[eff]==1), color="Year")+
+  #scale_x_continuous(breaks = seq(1982,2010,2) )+
+  scale_color_manual(values=my_palette)+
+  geom_point(position=pd)+
+  geom_linerange(aes(xmin=lo, xmax=hi), size=1, position=pd)+
+  geom_linerange(aes(xmin=lolo, xmax=hihi), position=pd)
+
+##############################
+# R_eff for selection of years
+##############################
+
+subci<-ci%>%filter(strain_yr %in% c(1968, 1978, 1988, 1998) )
+
+ord<-subci%>%filter(strain_yr==1968 & StudyYear==2022)
+
+ord<-ord[order(ord$med),]
+ord<-ord$country_name
+
+subci<-as.data.frame(subci)
+
+subci$country_name<-factor(subci$country_name, levels = ord)
+
+fig_yrs<-ggplot(subci, aes(y=country_name, x=med, color=as.factor(StudyYear)))+
+  theme_bw()+
+  fig_theme+
+  geom_vline(xintercept=1, color="red", linetype="dashed")+
+  labs(y="Country", x=expression(R[eff]~"for given strain year"), color="Year")+
+  #coord_cartesian(xlim=c(0.65,NA))+
+  #scale_x_continuous(breaks=seq(0.8,2,0.2))+
+  scale_color_manual(values=my_palette)+
+  geom_point(position=pd)+
+  geom_linerange(aes(xmin=lo, xmax=hi), size=1, position=pd)+
+  geom_linerange(aes(xmin=lolo, xmax=hihi), position=pd)+
+  facet_wrap(vars(strain_yr), nrow = 1)
+
+
+df<-ints2%>%filter(method=="abs")
+
+fig_country_sweep<-ggplot(ci, aes(x=strain_yr, y=med, color=as.factor(StudyYear)))+
+  theme_bw()+
+  fig_theme+
+  geom_hline(yintercept = 1, color="red", linetype="dashed")+
+  #geom_segment(data=df, aes(x = med, y = -Inf, xend = med, yend = 1), linetype="dashed", color="blue")+
+  labs(x="Strain year", y=expression(R[eff]), color="Year")+
+  geom_line()+
+  scale_color_manual(values=my_palette)+
+  #geom_vline(aes(xintercept=StudyYear, color=as.factor(StudyYear)), linetype="dashed")+
+  theme(legend.position = "bottom")+
+  # geom_ribbon(aes(ymin=lolo, ymax=hihi), alpha=0.2)+
+  # geom_ribbon(aes(ymin=lo, ymax=hi), alpha=0.5)+
+  facet_wrap(vars(country_name), ncol = 5)
+
+p<-ggarrange(fig_country_inter, fig_yrs, labels = c("a", "b"), widths = c(1,3),  nrow = 1, font.label = list(size = 8), common.legend = T, legend="bottom")
+# p<-ggarrange(fig_country_sweep, p, labels = c("a", NA), heights = c(0.65,0.35),  nrow = 2, font.label = list(size = 8), common.legend = T)
+
+ggsave(p, filename = "fig_future.pdf", width= 183, height=140, units="mm")
+
+ggsave(fig_country_sweep, filename = "fig_future_sweep.pdf", width= 183, height=140, units="mm")
+```
+
+

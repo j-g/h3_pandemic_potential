@@ -1,0 +1,87 @@
+```{r}
+################################################
+# Notebook for running different model scenarios
+################################################
+
+# Load data and functions before performing any analysis
+
+source("../data/contacts/process_fns.R")
+source("r0_calculation_fns.R")
+load("../data/contacts/processed_data.RData")
+
+```
+
+```{r}
+##################################################
+# Explore different magnitudes of non HAI immunity
+##################################################
+
+for(mag in c(0.2,0.4,0.6,0.8,1))
+{
+  t0<-Sys.time()
+  out<-rand_sweep(contact_data, params, coude_params, 5, 70, 100, seq(1968, 2022, 0.5), nonHAI=T, mag=mag, StudyYear=2022)
+  t1<-Sys.time()
+
+  difftime(t1, t0)
+
+  save(out, file=paste("../out/country_sweep_broad_new_ranj_", 10*mag,".RData"))
+}
+```
+
+```{r}
+##########################################
+# Explore different future reference years
+##########################################
+
+N<-200
+
+df<-NULL
+
+for(SY in c(2027, 2032, 2037, 2042))
+{
+  t0<-Sys.time()
+  out<-rand_sweep(contact_data, params, coude_params, 5, 70, N, seq(1968, SY, 0.5), nonHAI=F, mag=1, StudyYear=SY)
+  t1<-Sys.time()
+
+  out$StudyYear<-SY
+
+  df<-rbind(df, out)
+
+  difftime(t1, t0)
+}
+
+out<-df
+save(out, file=paste("../out/country_sweep_future.RData"))
+```
+
+```{r}
+################################
+# Model R_eff for real countries
+################################
+
+N<-100
+
+t0<-Sys.time()
+out<-rand_sweep(contact_data, params, coude_params, 5, 70, N, seq(1968, 2022, 0.5), nonHAI=F, mag=1, StudyYear=2022)
+t1<-Sys.time()
+
+difftime(t1, t0)
+
+save(out, file="../out/country_sweep.RData")
+```
+
+```{r}
+###########################################
+# Model R_eff for mix and matched countries
+###########################################
+
+country_mix<-list_of_mixes(contact_data, "cons")
+
+t0<-Sys.time()
+out<-avg_sweep(country_mix, params, coude_params, 5, 70, seq(1968, 2022, 0.5))
+t1<-Sys.time()
+
+difftime(t1, t0)
+
+save(out, file="../out/country_mix_sweep.RData")
+```
